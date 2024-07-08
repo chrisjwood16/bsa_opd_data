@@ -5,6 +5,9 @@ import requests
 import warnings
 import urllib.parse
 from datetime import datetime
+import time
+import gzip
+import io
 
 warnings.simplefilter("ignore", category=UserWarning)
 
@@ -141,6 +144,8 @@ def async_query(resource_id, sql):
     return sql
 
 def fetch_data(resource, sql, date_from, date_to):
+    print("Initializing fetch_data function")
+    
     # Create blank list to append each URL to call
     async_api_calls = []
 
@@ -148,9 +153,11 @@ def fetch_data(resource, sql, date_from, date_to):
     resource_names = []
     
     # Get a list of resources matching criteria (months to include)
+    print("Getting a list of available datasets based on date range")
     resource_name_list = resource_name_list_filter(resource, date_from, date_to)
     
     # Generate a list of API calls (and resource_names for error handling)
+    print("Generating list of API calls")
     for resource_id in resource_name_list:
         resource_names.append(resource_id)
         async_api_calls.append(
@@ -164,18 +171,31 @@ def fetch_data(resource, sql, date_from, date_to):
         )
     
     # Function to make the API call with retries
-    def make_request(url, retries=4):
+    def make_request(url, retries=2):
         for attempt in range(retries):
             response = grequests.get(url).send().response
             if response and response.ok:
+                print(f"API call successful for URL: {url}")
                 return response
             print(f"Attempt {attempt + 1} failed for URL: {url}")
             time.sleep(1)  # Optional: add a delay between retries
+        print(f"API call failed after {retries} attempts for URL: {url}")
         return None
 
+    print("Processing API calls with retries")
     # Process API calls with retries
     res = [make_request(url) for url in async_api_calls]
 
+    # Count the number of failed attempts and store failed details
+    failed_attempts = sum(1 for x in res if not (x and x.ok))
+    failed_details = [(async_api_calls[idx], resource_names[idx]) for idx, x in enumerate(res) if not (x and x.ok)]
+    
+    if failed_attempts >= 3:
+        print("3 or more API calls failed. Exiting function.")
+        for call, resource in failed_details:
+            print(f"Failed API call: {call} for resource ID: {resource}")
+        raise ValueError("API call error: 3 or more failed attempts.")
+    
     # Check all API calls ran OK
     all_ok = all(x and x.ok for x in res)
     any_ok = any(x and x.ok for x in res)
@@ -194,22 +214,35 @@ def fetch_data(resource, sql, date_from, date_to):
     if not all_ok:
         raise ValueError("API call error.")
     
+    print("Processing response data")
     # Initialize an empty list to store the temporary dataframes
     dataframes = []
     
-    for x in res:
+    for idx, x in enumerate(res):
         if x and x.ok:
             # Grab the response JSON as a temporary list
             tmp_response = x.json()
             
-            # Extract records in the response to a temporary dataframe
-            tmp_df = pd.json_normalize(tmp_response['result']['result']['records'])
+            # Check if the response is truncated and contains a download URL
+            if 'records_truncated' in tmp_response['result'] and tmp_response['result']['records_truncated'] == 'true':
+                download_url = tmp_response['result']['gc_urls'][0]['url']
+                print(f"Downloading truncated data from URL: {download_url}")
+                
+                # Download and process the gzip file
+                r = requests.get(download_url)
+                with gzip.open(io.BytesIO(r.content), 'rt') as f:
+                    tmp_df = pd.read_csv(f)
+            else:
+                # Extract records in the response to a temporary dataframe
+                tmp_df = pd.json_normalize(tmp_response['result']['result']['records'])
             
             # Append the temporary dataframe to the list
             dataframes.append(tmp_df)
     
     # Concatenate all dataframes in the list into a single dataframe
+    print("Concatenating dataframes")
     async_df = pd.concat(dataframes, ignore_index=True)
 
     # Return dataframe
+    print("Returning final dataframe")
     return async_df
