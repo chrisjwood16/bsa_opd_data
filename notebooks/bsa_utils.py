@@ -8,6 +8,7 @@ from datetime import datetime
 import time
 import gzip
 import io
+import os
 
 warnings.simplefilter("ignore", category=UserWarning)
 
@@ -15,6 +16,11 @@ base_endpoint = 'https://opendata.nhsbsa.net/api/3/action/'
 package_list_method = 'package_list'     # List of data-sets in the portal
 package_show_method = 'package_show?id=' # List all resources of a data-set
 action_method = 'datastore_search_sql?'  # SQL action method
+
+# Create data directory if doesn't exist
+dir_path = os.path.join("..", "data")
+if not os.path.exists(dir_path):
+    os.makedirs(dir_path)
 
 # Function to convert YYYYMM to YYYY-MM-DD
 def convert(date_str):
